@@ -40,7 +40,7 @@ parse_tracking_string <- function(x) {
     output_structure$cohort <- parts[1]
     mem_code <- str_sub(parts[1], 3, 4)
     output_structure$membership_type <- membership_lookup[mem_code]
-    parts <- parts[-1] 
+    parts <- parts[-1]
   } else {
     return(output_structure)
   }
@@ -116,8 +116,8 @@ ui <- fluidPage(
     sidebarPanel(
       
       h4("Step 1: Select Analysis Type"),
-      selectInput("analysis_type", "Analysis Type", 
-                  choices = c("Member Engagement", "Prospects"), 
+      selectInput("analysis_type", "Analysis Type",
+                  choices = c("Member Engagement", "Prospects"),
                   selected = "Member Engagement"),
       
       tags$hr(),
@@ -165,7 +165,8 @@ server <- function(input, output, session) {
     req(input$file_upload)
     
     # Read the raw data first
-    df <- read_csv(input$file_upload$datapath, col_types = cols(.default = "c"))
+    df <- read_csv(input$file_upload$datapath, col_types = cols(`24H Clock by Minute` = col_time(format = "%H:%M"), 
+                                                                .default = "c"))
     
     # --- Validation Logic ---
     sample_codes <- df$`Tracking Code` %>% na.omit() %>% head(100)
@@ -212,7 +213,8 @@ server <- function(input, output, session) {
           across(c(visits, shop_revenue, donate_revenue, membership_revenue, holiday_revenue, renew_revenue, video_start), as.numeric),
           date = mdy(date),
           session_time = hms(session_time),
-          timestamp = as.POSIXct(paste(date, session_time), format = "%Y-%m-%d %H:%M:%S")
+          timestamp = ymd_hms(paste(format(date, "%Y-%m-%d"), session_time), tz = "GMT")
+         # timestamp = as.POSIXct(date, session_time, format="%Y-%m-%d %H:%M:%S", tz = "GMT")
         ) %>%
         drop_na(cust_id) %>%
         filter(!str_detect(tracking_code, "%")) %>%
@@ -246,7 +248,7 @@ server <- function(input, output, session) {
           across(c(visits, shop_revenue, donate_revenue, membership_revenue, holiday_revenue, renew_revenue, video_start), as.numeric),
           date = mdy(date),
           session_time = hms(session_time),
-          timestamp = as.POSIXct(paste(date, session_time), format = "%Y-%m-%d %H:%M:%S")
+          timestamp = ymd_hms(paste(format(date, "%Y-%m-%d"), session_time), tz = "GMT")
         ) %>%
         drop_na(cust_id) %>%
         filter(!str_detect(tracking_code, "%")) %>%
@@ -332,7 +334,6 @@ server <- function(input, output, session) {
       filter(mosaic_cohort == input$mosaic_cohort_set) %>%
       pull(mosaic_letter) %>%
       unique() %>% sort()
-    # *** CHANGE: Add "All" to the Mosaic Letter choices ***
     selectInput("mosaic_letter_set", "Mosaic Letter", choices = c("All", choices))
   })
   
@@ -446,7 +447,6 @@ server <- function(input, output, session) {
         req(input$mosaic_letter_set) # Require letter only if a specific cohort is chosen
         data <- data %>% filter(mosaic_cohort == input$mosaic_cohort_set)
         
-        # *** CHANGE: Conditionally filter by mosaic_letter ***
         if (input$mosaic_letter_set != "All") {
           data <- data %>% filter(mosaic_letter == input$mosaic_letter_set)
         }
@@ -469,7 +469,6 @@ server <- function(input, output, session) {
     title <- if (input$analysis_type == "Member Engagement") {
       paste("Journey:", input$campaign_set, "- Mem Type:", input$membership_type_set, "- Variant:", input$test_variant_set)
     } else {
-      # *** CHANGE: Update title to handle "All" for mosaic letter ***
       base_title <- paste("Journey:", input$comm_type_set, "-", input$mosaic_cohort_set)
       if (input$mosaic_cohort_set != "All") {
         base_title <- paste(base_title, "- Mosaic:", input$mosaic_letter_set)
@@ -624,10 +623,13 @@ server <- function(input, output, session) {
       
       data_to_export <- base_data()
       
+      # --- Create the list of datasets, starting with the processed data ---
+      list_of_datasets <- list("Processed Data" = data_to_export)
+      
       if (input$analysis_type == "Member Engagement") {
         # --- ME Report Generation ---
         group_vars <- c("campaign", "membership_type")
-        list_of_datasets <- list(
+        list_of_datasets <- c(list_of_datasets, list(
           "Engagement Comparison" = data_to_export %>% group_by(campaign, membership_type, cust_id) %>% summarise(len = n(), .groups = 'drop') %>% group_by(campaign, membership_type) %>% summarise(journeys = n(), avg_len = round(mean(len), 1)),
           "Top Pages Comparison" = data_to_export %>% group_by(campaign, membership_type, content_title) %>% summarise(views = n(), .groups = 'drop') %>% group_by(campaign, membership_type) %>% slice_max(order_by = views, n = 10),
           "Top Paths Comparison" = create_paths_table(data_to_export, group_vars),
@@ -636,12 +638,12 @@ server <- function(input, output, session) {
           "Renewal Funnel" = create_paths_table(data_to_export, group_vars, journey_filter = any(content_type == 'Renew')),
           "Renewal Conversion" = create_paths_table(data_to_export, group_vars, journey_filter = any(renew_revenue > 0))
           # ... add other ME funnel tables here if needed ...
-        )
+        ))
       } else {
         # --- Prospects Report Generation ---
         group_vars_cohort <- c("communication_type", "mosaic_cohort")
         group_vars_letter <- c("communication_type", "mosaic_letter")
-        list_of_datasets <- list(
+        list_of_datasets <- c(list_of_datasets, list(
           "Engagement By Cohort" = data_to_export %>% group_by(communication_type, mosaic_cohort, cust_id) %>% summarise(len = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_cohort) %>% summarise(journeys = n(), avg_len = round(mean(len), 1)),
           "Engagement By Letter" = data_to_export %>% group_by(communication_type, mosaic_letter, cust_id) %>% summarise(len = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_letter) %>% summarise(journeys = n(), avg_len = round(mean(len), 1)),
           "Top Pages By Cohort" = data_to_export %>% group_by(communication_type, mosaic_cohort, content_title) %>% summarise(views = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_cohort) %>% slice_max(order_by = views, n = 10),
@@ -650,7 +652,7 @@ server <- function(input, output, session) {
           "Top Paths By Letter" = create_paths_table(data_to_export, group_vars_letter),
           "Membership Conversion" = create_paths_table(data_to_export, group_vars_letter, journey_filter = any(membership_revenue > 0))
           # ... add other PRO funnel tables here if needed ...
-        )
+        ))
       }
       
       wb <- createWorkbook()
