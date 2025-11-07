@@ -56,7 +56,6 @@ parse_tracking_string <- function(x) {
     if (length(region_matches) > 0) output_structure$em_click_region <- paste(region_matches, collapse = ", ")
     if (length(detail_matches) > 0) output_structure$em_click_detail <- paste(detail_matches, collapse = ", ")
   }
-  
   return(output_structure)
 }
 
@@ -102,10 +101,13 @@ parse_prospect_cohort <- function(x) {
 
 
 # 3. USER INTERFACE (UI) ----------------------------------------------------
-ui <- fluidPage(
-  
+ui <- fluidPage(  
   # Set the browser window title here
   title = "Journey Analyser",
+  tags$head(tags$link(rel="icon", 
+                              href="favicon.ico", type="image/x-icon")
+  ),
+  
   theme = bs_theme(version = 5, bootswatch = "cosmo"),
   
   # Use a standard header tag for the dynamic on-page title
@@ -194,13 +196,15 @@ server <- function(input, output, session) {
   # This reactive takes the validated data and applies the correct cleaning pipeline
   base_data <- reactive({
     df <- validated_data() # This depends on the validated data
-    
+   # browser()
     # --- CONDITIONAL DATA PROCESSING ---
     if (input$analysis_type == "Member Engagement") {
       # === MEMBER ENGAGEMENT PIPELINE ===
+     # browser()
       member_engagement_data <- df %>%
         rename(
-          date = Date, cust_id = `MCVID (v29) (evar29)`, tracking_code = `Tracking Code`,
+          date_str = Date, # Keep original date string temporarily
+          cust_id = `MCVID (v29) (evar29)`, tracking_code = `Tracking Code`,
           page_name = `Page Name (v26) (evar26)`, page_url = `URL (v8) (evar8)`, session_time = `24H Clock by Minute`,
           content_type = `Content Type (v7) (evar7)`, content_title = `Content Title (v22) (evar22)`,
           visit_num = `Visit Number`, exit_link = `Exit Links`, page_views = `Page Views`,
@@ -210,11 +214,10 @@ server <- function(input, output, session) {
           renew_revenue = `Renew Revenue - Serialized (ev79) (event79)`, video_start = `Video Start (ev10) (event10)`
         ) %>%
         mutate(
-          across(c(visits, shop_revenue, donate_revenue, membership_revenue, holiday_revenue, renew_revenue, video_start), as.numeric),
-          date = mdy(date),
-          session_time = hms(session_time),
-          timestamp = ymd_hms(paste(format(date, "%Y-%m-%d"), session_time), tz = "GMT")
-         # timestamp = as.POSIXct(date, session_time, format="%Y-%m-%d %H:%M:%S", tz = "GMT")
+          across(c(visits, shop_revenue, donate_revenue, membership_revenue, holiday_revenue, renew_revenue, video_start, visit_num), as.numeric), # Convert visit_num here
+          date = mdy(date_str), # Use mdy for more flexible date parsing
+          # Ensure date is formatted before pasting, use ymd_hms
+          timestamp = ymd_hms(paste(format(date, "%Y-%m-%d"), session_time), tz = "UTC") 
         ) %>%
         drop_na(cust_id) %>%
         filter(!str_detect(tracking_code, "%")) %>%
@@ -225,8 +228,9 @@ server <- function(input, output, session) {
       parsed_data <- map_dfr(member_engagement_data$cohort_group, parse_tracking_string)
       
       final_data <- bind_cols(member_engagement_data, parsed_data) %>%
-        drop_na(campaign, send_date, membership_type, test_variant)
-      
+       # drop_na(campaign, send_date, membership_type, test_variant, timestamp) %>% # Also drop NA timestamps
+        select(-date_str) # Remove temporary date string column
+     # browser()
       return(final_data)
       
     } else {
@@ -235,7 +239,8 @@ server <- function(input, output, session) {
       # First, do the standard renaming and type conversion
       prospect_data_intermediate <- df %>%
         rename(
-          date = Date, cust_id = `MCVID (v29) (evar29)`, tracking_code = `Tracking Code`,
+          date_str = Date, # Keep original date string temporarily
+          cust_id = `MCVID (v29) (evar29)`, tracking_code = `Tracking Code`,
           page_name = `Page Name (v26) (evar26)`, page_url = `URL (v8) (evar8)`, session_time = `24H Clock by Minute`,
           content_type = `Content Type (v7) (evar7)`, content_title = `Content Title (v22) (evar22)`,
           visit_num = `Visit Number`, exit_link = `Exit Links`, page_views = `Page Views`,
@@ -245,10 +250,10 @@ server <- function(input, output, session) {
           renew_revenue = `Renew Revenue - Serialized (ev79) (event79)`, video_start = `Video Start (ev10) (event10)`
         ) %>%
         mutate(
-          across(c(visits, shop_revenue, donate_revenue, membership_revenue, holiday_revenue, renew_revenue, video_start), as.numeric),
-          date = mdy(date),
-          session_time = hms(session_time),
-          timestamp = ymd_hms(paste(format(date, "%Y-%m-%d"), session_time), tz = "GMT")
+          across(c(visits, shop_revenue, donate_revenue, membership_revenue, holiday_revenue, renew_revenue, video_start, visit_num), as.numeric), # Convert visit_num here
+          date = mdy(date_str), # Use mdy for more flexible date parsing
+          # Ensure date is formatted before pasting, use ymd_hms
+          timestamp = ymd_hms(paste(format(date, "%Y-%m-%d"), session_time), tz = "UTC")
         ) %>%
         drop_na(cust_id) %>%
         filter(!str_detect(tracking_code, "%")) %>%
@@ -265,7 +270,7 @@ server <- function(input, output, session) {
         rename(cohort = cohort_clean) %>% # overwrite cohort with the clean version
         mutate(send_date = dmy(send_date_str)) %>%
         mutate(
-          source_code = substr(cohort, 3, 8), date_str = substr(cohort, 9, 14),
+          source_code = substr(cohort, 3, 8), date_str_from_cohort = substr(cohort, 9, 14), # Renamed to avoid clash
           comm_type_code = substr(cohort, 15, 16), cust_status_code = substr(cohort, 17, 17),
           mosaic_letter = substr(cohort, 18, 18),
           communication_type = case_when(comm_type_code == "PW" ~ "Prospect Welcome", comm_type_code == "PN" ~ "Prospect Newsletter", comm_type_code == "DO" ~ "Double Opt-In", TRUE ~ NA_character_),
@@ -273,8 +278,9 @@ server <- function(input, output, session) {
           mosaic_cohort = case_when(mosaic_letter %in% c("K", "O") ~ "Cohort 1", mosaic_letter %in% c("A") ~ "Cohort 2.1", mosaic_letter %in% c("G", "H") ~ "Cohort 2.2", mosaic_letter %in% c("B", "C", "E") ~ "Cohort 3", mosaic_letter %in% c("D", "F", "I", "J", "L", "M", "N", "U") ~ "Everyone Else", TRUE ~ NA_character_)
         ) %>%
         filter(substr(source_code, 1, 3) %in% c('DCP', 'MCC', 'DCN')) %>%
-        drop_na(communication_type, customer_status, mosaic_cohort, mosaic_letter)
-      
+       # drop_na(communication_type, customer_status, mosaic_cohort, mosaic_letter, timestamp) %>% # Also drop NA timestamps
+        select(-date_str) # Remove temporary date string column
+      # browser()
       return(prospect_data)
     }
   })
@@ -285,18 +291,20 @@ server <- function(input, output, session) {
   # Renders the correct set of sidebar filters based on analysis type
   output$dynamic_sidebar_filters <- renderUI({
     req(base_data()) # Require data to be loaded
-    
+   # browser()
     if (input$analysis_type == "Member Engagement") {
       # --- ME Filters ---
       tagList(
         h4("Step 3: Filter Journey"),
         p("Select a cohort to visualize their journey graph."),
         selectInput("campaign_set", "Campaign", choices = sort(unique(base_data()$campaign))),
-        selectInput("send_date_set", "Send Date", choices = sort(unique(base_data()$send_date), decreasing = TRUE)),
-        selectInput("membership_type_set", "Membership Type", choices = sort(unique(base_data()$membership_type))),
+        selectInput("send_date_set", "Send Date (YMD)", choices = sort(unique(base_data()$send_date), decreasing = TRUE)),
+        selectInput("membership_type_set", "Membership Type", choices = c("All", sort(unique(base_data()$membership_type)))),
         selectInput("test_variant_set", "Test Variant", choices = c("All", unique(na.omit(base_data()$test_variant)))),
         selectInput("em_click_region_set", "Email Click Region", choices = c("All", unique(na.omit(base_data()$em_click_region)))),
         selectInput("em_click_detail_set", "Email Click Detail", choices = c("All", unique(na.omit(base_data()$em_click_detail)))),
+        # *** NEW: Add checkbox for grouping by visit ***
+        checkboxInput("group_by_visit", "Group by Visit", value = TRUE),
         checkboxInput("use_content_type", "Group Nodes by Content Type", value = FALSE),
         tags$hr(),
         h4("Step 4: Download Full Report"),
@@ -316,6 +324,8 @@ server <- function(input, output, session) {
         uiOutput("mosaic_letter_ui_placeholder"),
         selectInput("em_click_region_set", "Email Click Region", choices = c("All", unique(na.omit(base_data()$em_click_region)))),
         selectInput("em_click_detail_set", "Email Click Detail", choices = c("All", unique(na.omit(base_data()$em_click_detail)))),
+        # *** NEW: Add checkbox for grouping by visit ***
+        checkboxInput("group_by_visit", "Group by Visit", value = TRUE),
         checkboxInput("use_content_type", "Group Nodes by Content Type", value = FALSE),
         tags$hr(),
         h4("Step 4: Download Full Report"),
@@ -353,7 +363,7 @@ server <- function(input, output, session) {
               "Journey Graph", icon = icon("project-diagram"),
               h3(textOutput("graph_title")),
               p("This interactive graph shows user paths. Nodes are web pages, edges are transitions."),
-              visNetworkOutput("network_plot", height = "85vh")
+              visNetworkOutput("network_plot", height = "100vh")
             )
           )
           
@@ -426,13 +436,19 @@ server <- function(input, output, session) {
   # D. REACTIVE DATA FILTERING ----------------------------------------------
   
   filtered_data <- reactive({
+    #browser()
     req(base_data()) # Base data must exist
     
     data <- base_data()
     
     if (input$analysis_type == "Member Engagement") {
       req(input$campaign_set, input$send_date_set, input$membership_type_set, input$test_variant_set, input$em_click_region_set, input$em_click_detail_set)
-      data <- data %>% filter(campaign == input$campaign_set, send_date == input$send_date_set, membership_type == input$membership_type_set)
+      data <- data %>% filter(campaign == input$campaign_set, send_date == input$send_date_set)
+      
+      if (input$membership_type_set != "All") {
+        data <- data %>% filter(membership_type == input$membership_type_set)
+      }
+      
       if (input$test_variant_set != "All") data <- data %>% filter(test_variant == input$test_variant_set)
       if (input$em_click_region_set != "All") data <- data %>% filter(em_click_region == input$em_click_region_set)
       if (input$em_click_detail_set != "All") data <- data %>% filter(em_click_detail == input$em_click_detail_set)
@@ -476,31 +492,50 @@ server <- function(input, output, session) {
       base_title
     }
     
-    if (isTRUE(input$use_content_type)) paste(title, "(Grouped by Content Type)") else title
+    # Add grouping note
+    grouping_note <- if (isTRUE(input$group_by_visit)) "(Grouped by Visit)" else "(Across Visits)"
+    final_title <- paste(title, grouping_note)
+    
+    if (isTRUE(input$use_content_type)) paste(final_title, "(Grouped by Content Type)") else final_title
   })
   
   # -- E2. Journey Graph (Unified Logic) --
   output$network_plot <- renderVisNetwork({
-    req(nrow(filtered_data()) > 0)
+    req(nrow(filtered_data()) > 0, !is.null(input$group_by_visit)) # Ensure checkbox value is available
     
     grouping_col <- if (isTRUE(input$use_content_type)) "content_type" else "content_title"
     
-    # 1. Calculate transition metrics
+    # *** CHANGE: Conditionally define journey grouping variables ***
+    journey_group_vars <- if (isTRUE(input$group_by_visit)) c("cust_id", "visit_num") else "cust_id"
+    
+    # 1. Calculate transition metrics based on selected grouping
     metrics <- filtered_data() %>%
-      group_by(cust_id) %>% arrange(timestamp) %>%
+      group_by(across(all_of(journey_group_vars))) %>% # Apply conditional grouping
+      arrange(timestamp) %>%
       mutate(from = .data[[grouping_col]], to = lead(.data[[grouping_col]])) %>%
-      ungroup() %>% filter(!is.na(to)) %>%
-      group_by(from, to) %>% summarise(original_width = sum(visits, na.rm = TRUE), .groups = 'drop')
+      ungroup() %>% 
+      filter(!is.na(to)) %>%
+      group_by(from, to) %>% 
+      summarise(original_width = sum(visits, na.rm = TRUE), .groups = 'drop')
     
     validate(need(nrow(metrics) > 0, "No journeys with more than one page view found for this selection."))
     
     # 2. Robustly scale the edge widths
     new_min <- 1; new_max <- 15
-    if (max(metrics$original_width, na.rm = TRUE) == min(metrics$original_width, na.rm = TRUE)) {
+    min_width <- min(metrics$original_width, na.rm = TRUE)
+    max_width <- max(metrics$original_width, na.rm = TRUE)
+    
+    if (nrow(metrics) > 0 && max_width == min_width) {
       metrics$scaled_width <- new_min
-    } else {
+    } else if (nrow(metrics) > 0) {
       metrics <- metrics %>%
-        mutate(scaled_width = new_min + ((original_width - min(original_width)) / (max(original_width) - min(original_width))) * (new_max - new_min))
+        mutate(scaled_width = new_min + ((original_width - min_width) / (max_width - min_width)) * (new_max - new_min))
+    } else {
+      metrics$scaled_width <- numeric(0)
+    }
+    
+    if(any(is.nan(metrics$scaled_width))) {
+      metrics$scaled_width[is.nan(metrics$scaled_width)] <- new_min 
     }
     
     # 3. Create nodes with robust group lookup
@@ -510,8 +545,8 @@ server <- function(input, output, session) {
       nodes <- nodes %>% mutate(group = id)
     } else {
       lookup <- filtered_data() %>%
-        group_by(content_title) %>%
-        summarise(content_type = first(na.omit(content_type)), .groups = 'drop')
+        distinct(content_title, .keep_all = TRUE) %>% # Use distinct for efficiency
+        select(content_title, content_type)
       
       nodes <- nodes %>% left_join(lookup, by = c("id" = "content_title")) %>% rename(group = content_type)
     }
@@ -540,37 +575,67 @@ server <- function(input, output, session) {
   }
   
   # Helper function for creating path tables
-  create_paths_table <- function(data, group_vars, journey_filter = NULL) {
+  # *** CHANGE: Add group_by_visit argument ***
+  create_paths_table <- function(data, group_vars, journey_filter = NULL, group_by_visit = TRUE) {
+    
+    # Ensure data has rows before proceeding
+    if(nrow(data) == 0) return(tibble()) 
+    
+    # *** CHANGE: Define journey grouping based on argument ***
+    journey_group_vars <- if (group_by_visit) c(group_vars, "cust_id", "visit_num") else c(group_vars, "cust_id")
     
     journeys <- data %>%
-      group_by(across(all_of(c(group_vars, "cust_id"))))
+      group_by(across(all_of(journey_group_vars)))
     
+    # Filter whole journeys based on a condition (applied *before* path calculation)
     if (!is.null(substitute(journey_filter))) {
-      journeys <- journeys %>% filter({{ journey_filter }})
+      filter_group_vars <- if (group_by_visit) c("cust_id", "visit_num") else "cust_id"
+      
+      journeys_to_filter <- data %>% 
+        group_by(across(all_of(filter_group_vars))) %>% 
+        filter({{ journey_filter }}) %>%
+        ungroup()
+      
+      # Get the unique journey identifiers that meet the criteria
+      valid_journeys <- journeys_to_filter %>% distinct(across(all_of(filter_group_vars)))
+      
+      # Filter the original data to keep only those valid journeys
+      journeys <- data %>% semi_join(valid_journeys, by = filter_group_vars) %>%
+        group_by(across(all_of(journey_group_vars))) # Re-apply full grouping needed for arrange/lead
+      
+      if(nrow(journeys) == 0) return(tibble())
     }
     
-    journeys %>%
+    paths <- journeys %>%
       arrange(timestamp, .by_group = TRUE) %>%
       mutate(next_page = lead(content_title)) %>%
-      ungroup() %>%
-      filter(!is.na(next_page)) %>%
+      ungroup() %>% # Ungroup completely before filtering NAs and final grouping
+      filter(!is.na(next_page)) 
+    
+    # If no paths exist after lead/filter, return empty tibble
+    if(nrow(paths) == 0) return(tibble())
+    
+    paths %>%
+      # Final grouping is only by the reporting group_vars and the path itself
       group_by(across(all_of(c(group_vars, "from" = "content_title", "to" = "next_page")))) %>%
       summarise(transition_count = n(), .groups = 'drop') %>%
       group_by(across(all_of(group_vars))) %>%
       slice_max(order_by = transition_count, n = 10) %>%
-      arrange(desc(across(all_of(group_vars[1]))))
+      arrange(desc(across(all_of(group_vars[1])))) # Arrange by first group var
   }
   
   # Reports Tab Tables
   output$engagement_comparison_table <- render_dt({
+    req(nrow(base_data()) > 0) # Ensure base_data has rows
     if (input$analysis_type == "Member Engagement") {
-      base_data() %>% group_by(campaign, membership_type, cust_id, visit_num) %>% summarise(len = n(), .groups = 'drop') %>% group_by(campaign, membership_type) %>% summarise(journeys = n(), avg_len = round(mean(len), 1))
+      base_data() %>% group_by(campaign, membership_type, cust_id, visit_num) %>% summarise(len = n(), .groups = 'drop') %>% group_by(campaign, membership_type) %>% summarise(journeys = n_distinct(cust_id, visit_num), avg_len = round(mean(len), 1))
     } else {
-      base_data() %>% group_by(communication_type, mosaic_cohort, cust_id, visit_num) %>% summarise(len = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_cohort) %>% summarise(journeys = n(), avg_len = round(mean(len), 1))
+      base_data() %>% group_by(communication_type, mosaic_cohort, cust_id, visit_num) %>% summarise(len = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_cohort) %>% summarise(journeys = n_distinct(cust_id, visit_num), avg_len = round(mean(len), 1))
     }
-  }, "Engagement Metrics Comparison")
+  }, "Engagement Metrics Comparison (Per Visit)") # Clarified caption
   
   output$top_pages_comparison_table <- render_dt({
+    req(nrow(base_data()) > 0)
     if (input$analysis_type == "Member Engagement") {
       base_data() %>% group_by(campaign, membership_type, content_title) %>% summarise(views = n(), .groups = 'drop') %>% group_by(campaign, membership_type) %>% slice_max(order_by = views, n = 10)
     } else {
@@ -579,39 +644,43 @@ server <- function(input, output, session) {
   }, "Top 10 Most Visited Pages")
   
   output$top_paths_comparison_table <- render_dt({
+    req(nrow(base_data()) > 0, !is.null(input$group_by_visit)) # Ensure checkbox value is available
     groups <- if (input$analysis_type == "Member Engagement") c("campaign", "membership_type") else c("communication_type", "mosaic_cohort")
-    create_paths_table(base_data(), groups)
+    # *** CHANGE: Pass group_by_visit value ***
+    create_paths_table(base_data(), groups, group_by_visit = input$group_by_visit) 
   }, "Top 10 Most Common Paths")
   
   # PROSPECTS-ONLY Tables
   output$engagement_comparison_mosaic_table <- render_dt({
-    req(input$analysis_type == "Prospects")
-    base_data() %>% group_by(communication_type, mosaic_letter, cust_id, visit_num) %>% summarise(len = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_letter) %>% summarise(journeys = n(), avg_len = round(mean(len), 1))
-  }, "Engagement Metrics by Mosaic Letter")
+    req(input$analysis_type == "Prospects", nrow(base_data()) > 0)
+    base_data() %>% group_by(communication_type, mosaic_letter, cust_id, visit_num) %>% summarise(len = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_letter) %>% summarise(journeys = n_distinct(cust_id, visit_num), avg_len = round(mean(len), 1))
+  }, "Engagement Metrics by Mosaic Letter (Per Visit)") # Clarified caption
   
   output$top_pages_comparison_mosaic_table <- render_dt({
-    req(input$analysis_type == "Prospects")
+    req(input$analysis_type == "Prospects", nrow(base_data()) > 0)
     base_data() %>% group_by(communication_type, mosaic_letter, content_title) %>% summarise(views = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_letter) %>% slice_max(order_by = views, n = 10)
   }, "Top 10 Pages by Mosaic Letter")
   
   output$top_paths_comparison_mosaic_table <- render_dt({
-    req(input$analysis_type == "Prospects")
-    create_paths_table(base_data(), c("communication_type", "mosaic_letter"))
+    req(input$analysis_type == "Prospects", nrow(base_data()) > 0, !is.null(input$group_by_visit)) # Ensure checkbox value is available
+    # *** CHANGE: Pass group_by_visit value ***
+    create_paths_table(base_data(), c("communication_type", "mosaic_letter"), group_by_visit = input$group_by_visit) 
   }, "Top 10 Paths by Mosaic Letter")
   
   # Funnel Tables
   get_funnel_group_vars <- reactive({ if (input$analysis_type == "Member Engagement") c("campaign", "membership_type") else c("communication_type", "mosaic_letter") })
   
-  output$top_paths_mem_funnel_table <- render_dt({ create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(str_detect(page_name, 'M\\|Membership\\|Step 1.0')))}, "Top Paths to Membership Funnel")
-  output$top_paths_mem_funnel_revenue_table <- render_dt({ create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(membership_revenue > 0))}, "Top Paths to Membership Conversion")
-  output$top_paths_renew_funnel_table <- render_dt({ create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(content_type == 'Renew'))}, "Top Paths to Renewal Funnel")
-  output$top_paths_renew_funnel_revenue_table <- render_dt({ create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(renew_revenue > 0))}, "Top Paths to Renewal Conversion")
-  output$top_paths_donate_funnel_table <- render_dt({ create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(content_type == 'Donate'))}, "Top Paths to Donations Funnel")
-  output$top_paths_donate_funnel_revenue_table <- render_dt({ create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(donate_revenue > 0))}, "Top Paths to Donations Conversion")
-  output$top_paths_shop_funnel_table <- render_dt({ create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(content_type == 'ShopHome'))}, "Top Paths to Shop Pages")
-  output$top_paths_shop_funnel_revenue_table <- render_dt({ create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(shop_revenue > 0))}, "Top Paths to Shop Conversion")
-  output$top_paths_holidays_funnel_table <- render_dt({ create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(str_detect(content_type, "Holidays")))}, "Top Paths to Holidays Pages")
-  output$top_paths_holidays_funnel_revenue_table <- render_dt({ create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(holiday_revenue > 0))}, "Top Paths to Holiday Conversion")
+  # *** CHANGE: Pass group_by_visit value to all create_paths_table calls below ***
+  output$top_paths_mem_funnel_table <- render_dt({ req(nrow(base_data()) > 0, !is.null(input$group_by_visit)); create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(str_detect(page_name, 'M\\|Membership\\|Step 1.0')), group_by_visit = input$group_by_visit)}, "Top Paths to Membership Funnel")
+  output$top_paths_mem_funnel_revenue_table <- render_dt({ req(nrow(base_data()) > 0, !is.null(input$group_by_visit)); create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(membership_revenue > 0), group_by_visit = input$group_by_visit)}, "Top Paths to Membership Conversion")
+  output$top_paths_renew_funnel_table <- render_dt({ req(nrow(base_data()) > 0, !is.null(input$group_by_visit)); create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(content_type == 'Renew'), group_by_visit = input$group_by_visit)}, "Top Paths to Renewal Funnel")
+  output$top_paths_renew_funnel_revenue_table <- render_dt({ req(nrow(base_data()) > 0, !is.null(input$group_by_visit)); create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(renew_revenue > 0), group_by_visit = input$group_by_visit)}, "Top Paths to Renewal Conversion")
+  output$top_paths_donate_funnel_table <- render_dt({ req(nrow(base_data()) > 0, !is.null(input$group_by_visit)); create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(content_type == 'Donate'), group_by_visit = input$group_by_visit)}, "Top Paths to Donations Funnel")
+  output$top_paths_donate_funnel_revenue_table <- render_dt({ req(nrow(base_data()) > 0, !is.null(input$group_by_visit)); create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(donate_revenue > 0), group_by_visit = input$group_by_visit)}, "Top Paths to Donations Conversion")
+  output$top_paths_shop_funnel_table <- render_dt({ req(nrow(base_data()) > 0, !is.null(input$group_by_visit)); create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(content_type == 'ShopHome'), group_by_visit = input$group_by_visit)}, "Top Paths to Shop Pages")
+  output$top_paths_shop_funnel_revenue_table <- render_dt({ req(nrow(base_data()) > 0, !is.null(input$group_by_visit)); create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(shop_revenue > 0), group_by_visit = input$group_by_visit)}, "Top Paths to Shop Conversion")
+  output$top_paths_holidays_funnel_table <- render_dt({ req(nrow(base_data()) > 0, !is.null(input$group_by_visit)); create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(str_detect(content_type, "Holidays")), group_by_visit = input$group_by_visit)}, "Top Paths to Holidays Pages")
+  output$top_paths_holidays_funnel_revenue_table <- render_dt({ req(nrow(base_data()) > 0, !is.null(input$group_by_visit)); create_paths_table(base_data(), get_funnel_group_vars(), journey_filter = any(holiday_revenue > 0), group_by_visit = input$group_by_visit)}, "Top Paths to Holiday Conversion")
   
   
   # F. DOWNLOAD HANDLER -----------------------------------------------------
@@ -623,20 +692,25 @@ server <- function(input, output, session) {
       
       data_to_export <- base_data()
       
+      # Ensure data exists before trying to generate report
+      req(nrow(data_to_export) > 0, !is.null(input$group_by_visit)) # Ensure checkbox value is available for report gen
+      
       # --- Create the list of datasets, starting with the processed data ---
       list_of_datasets <- list("Processed Data" = data_to_export)
+      
+      # *** CHANGE: Pass group_by_visit value to create_paths_table calls in report ***
       
       if (input$analysis_type == "Member Engagement") {
         # --- ME Report Generation ---
         group_vars <- c("campaign", "membership_type")
         list_of_datasets <- c(list_of_datasets, list(
-          "Engagement Comparison" = data_to_export %>% group_by(campaign, membership_type, cust_id) %>% summarise(len = n(), .groups = 'drop') %>% group_by(campaign, membership_type) %>% summarise(journeys = n(), avg_len = round(mean(len), 1)),
+          "Engagement Comparison" = data_to_export %>% group_by(campaign, membership_type, cust_id, visit_num) %>% summarise(len = n(), .groups = 'drop') %>% group_by(campaign, membership_type) %>% summarise(journeys = n_distinct(cust_id, visit_num), avg_len = round(mean(len), 1)), # Updated engagement metric def
           "Top Pages Comparison" = data_to_export %>% group_by(campaign, membership_type, content_title) %>% summarise(views = n(), .groups = 'drop') %>% group_by(campaign, membership_type) %>% slice_max(order_by = views, n = 10),
-          "Top Paths Comparison" = create_paths_table(data_to_export, group_vars),
-          "Membership Funnel" = create_paths_table(data_to_export, group_vars, journey_filter = any(str_detect(page_name, 'M\\|Membership\\|Step 1.0'))),
-          "Membership Conversion" = create_paths_table(data_to_export, group_vars, journey_filter = any(membership_revenue > 0)),
-          "Renewal Funnel" = create_paths_table(data_to_export, group_vars, journey_filter = any(content_type == 'Renew')),
-          "Renewal Conversion" = create_paths_table(data_to_export, group_vars, journey_filter = any(renew_revenue > 0))
+          "Top Paths Comparison" = create_paths_table(data_to_export, group_vars, group_by_visit = input$group_by_visit),
+          "Membership Funnel" = create_paths_table(data_to_export, group_vars, journey_filter = any(str_detect(page_name, 'M\\|Membership\\|Step 1.0')), group_by_visit = input$group_by_visit),
+          "Membership Conversion" = create_paths_table(data_to_export, group_vars, journey_filter = any(membership_revenue > 0), group_by_visit = input$group_by_visit),
+          "Renewal Funnel" = create_paths_table(data_to_export, group_vars, journey_filter = any(content_type == 'Renew'), group_by_visit = input$group_by_visit),
+          "Renewal Conversion" = create_paths_table(data_to_export, group_vars, journey_filter = any(renew_revenue > 0), group_by_visit = input$group_by_visit)
           # ... add other ME funnel tables here if needed ...
         ))
       } else {
@@ -644,22 +718,27 @@ server <- function(input, output, session) {
         group_vars_cohort <- c("communication_type", "mosaic_cohort")
         group_vars_letter <- c("communication_type", "mosaic_letter")
         list_of_datasets <- c(list_of_datasets, list(
-          "Engagement By Cohort" = data_to_export %>% group_by(communication_type, mosaic_cohort, cust_id) %>% summarise(len = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_cohort) %>% summarise(journeys = n(), avg_len = round(mean(len), 1)),
-          "Engagement By Letter" = data_to_export %>% group_by(communication_type, mosaic_letter, cust_id) %>% summarise(len = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_letter) %>% summarise(journeys = n(), avg_len = round(mean(len), 1)),
+          "Engagement By Cohort" = data_to_export %>% group_by(communication_type, mosaic_cohort, cust_id, visit_num) %>% summarise(len = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_cohort) %>% summarise(journeys = n_distinct(cust_id, visit_num), avg_len = round(mean(len), 1)), # Updated engagement metric def
+          "Engagement By Letter" = data_to_export %>% group_by(communication_type, mosaic_letter, cust_id, visit_num) %>% summarise(len = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_letter) %>% summarise(journeys = n_distinct(cust_id, visit_num), avg_len = round(mean(len), 1)), # Updated engagement metric def
           "Top Pages By Cohort" = data_to_export %>% group_by(communication_type, mosaic_cohort, content_title) %>% summarise(views = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_cohort) %>% slice_max(order_by = views, n = 10),
           "Top Pages By Letter" = data_to_export %>% group_by(communication_type, mosaic_letter, content_title) %>% summarise(views = n(), .groups = 'drop') %>% group_by(communication_type, mosaic_letter) %>% slice_max(order_by = views, n = 10),
-          "Top Paths By Cohort" = create_paths_table(data_to_export, group_vars_cohort),
-          "Top Paths By Letter" = create_paths_table(data_to_export, group_vars_letter),
-          "Membership Conversion" = create_paths_table(data_to_export, group_vars_letter, journey_filter = any(membership_revenue > 0))
+          "Top Paths By Cohort" = create_paths_table(data_to_export, group_vars_cohort, group_by_visit = input$group_by_visit),
+          "Top Paths By Letter" = create_paths_table(data_to_export, group_vars_letter, group_by_visit = input$group_by_visit),
+          "Membership Funnel" = create_paths_table(data_to_export, group_vars_letter, journey_filter = any(str_detect(page_name, 'M\\|Membership\\|Step 1.0')), group_by_visit = input$group_by_visit),
+          "Membership Conversion" = create_paths_table(data_to_export, group_vars_letter, journey_filter = any(membership_revenue > 0), group_by_visit = input$group_by_visit)
           # ... add other PRO funnel tables here if needed ...
         ))
       }
       
       wb <- createWorkbook()
       for (sheet_name in names(list_of_datasets)) {
-        addWorksheet(wb, sheet_name)
-        writeData(wb, sheet = sheet_name, x = list_of_datasets[[sheet_name]], headerStyle = createStyle(textDecoration = "bold"))
-        setColWidths(wb, sheet = sheet_name, cols = 1:ncol(list_of_datasets[[sheet_name]]), widths = "auto")
+        # Ensure the dataset for the sheet is not empty before writing
+        current_data <- list_of_datasets[[sheet_name]]
+        if (!is.null(current_data) && nrow(current_data) > 0) {
+          addWorksheet(wb, sheet_name)
+          writeData(wb, sheet = sheet_name, x = current_data, headerStyle = createStyle(textDecoration = "bold"))
+          setColWidths(wb, sheet = sheet_name, cols = 1:ncol(current_data), widths = "auto")
+        }
       }
       saveWorkbook(wb, file, overwrite = TRUE)
     }
